@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ambient Backlight Controller</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Ambient Backlight</h1>
+      <p class="subtitle">ESP32-C3 monitor edge LED controller</p>
+    </header>
+
+    <main class="grid">
+      <section class="card span-2">
+        <h2>LED Layout</h2>
+        <p class="hint">Strip indices per edge. Stream order: Left &rarr; Top &rarr; Right &rarr; Bottom. If start &gt; end, direction runs backward on the strip.</p>
+        <div class="preview-stage">
+          <div class="edge-panel edge-top">
+            <span class="edge-tag top">Top</span>
+            <div class="edge-fields">
+              <label>Start <input type="number" id="top-start" min="0" max="511" value="30"></label>
+              <label>End <input type="number" id="top-end" min="0" max="511" value="59"></label>
+            </div>
+          </div>
+          <div class="edge-panel edge-left">
+            <span class="edge-tag left">Left</span>
+            <div class="edge-fields vertical">
+              <label>Start <input type="number" id="left-start" min="0" max="511" value="0"></label>
+              <label>End <input type="number" id="left-end" min="0" max="511" value="29"></label>
+            </div>
+          </div>
+          <canvas id="preview-canvas" width="640" height="400"></canvas>
+          <div class="edge-panel edge-right">
+            <span class="edge-tag right">Right</span>
+            <div class="edge-fields vertical">
+              <label>Start <input type="number" id="right-start" min="0" max="511" value="60"></label>
+              <label>End <input type="number" id="right-end" min="0" max="511" value="89"></label>
+            </div>
+          </div>
+          <div class="edge-panel edge-bottom">
+            <span class="edge-tag bottom">Bottom</span>
+            <div class="edge-fields">
+              <label>Start <input type="number" id="bottom-start" min="0" max="511" value="90"></label>
+              <label>End <input type="number" id="bottom-end" min="0" max="511" value="119"></label>
+            </div>
+          </div>
+        </div>
+        <div class="layout-summary">
+          <span>Strip length: <strong id="strip-length">120</strong></span>
+          <span>Stream total: <strong id="layout-total">120</strong></span>
+          <span id="layout-warning" class="warning hidden">Index exceeds strip length!</span>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="save-layout" class="btn btn-primary">Save Layout</button>
+        </div>
+      </section>
+
+      <section class="card span-2">
+        <h2>Brightness</h2>
+        <div class="slider-row">
+          <input type="range" id="brightness" min="0" max="255" value="128">
+          <output id="brightness-value">128</output>
+          <button type="button" id="save-brightness" class="btn btn-primary">Save</button>
+        </div>
+        <label class="checkbox-row">
+          <input type="checkbox" id="gamma-correction" checked>
+          Gamma correction
+        </label>
+        <label>
+          Max WebSocket FPS
+          <input type="number" id="max-fps" min="0" max="120" value="60">
+          <span class="hint-inline">0 = unlimited</span>
+        </label>
+      </section>
+
+      <section class="card span-2">
+        <h2>Test Patterns</h2>
+        <div class="pattern-grid" id="pattern-buttons"></div>
+      </section>
+
+      <section class="card">
+        <h2>Device Information</h2>
+        <dl class="info-list" id="device-info">
+          <div><dt>IP Address</dt><dd id="info-ip">—</dd></div>
+          <div><dt>Hostname</dt><dd id="info-hostname">—</dd></div>
+          <div><dt>Wi-Fi RSSI</dt><dd id="info-rssi">—</dd></div>
+          <div><dt>Free Heap</dt><dd id="info-heap">—</dd></div>
+          <div><dt>Uptime</dt><dd id="info-uptime">—</dd></div>
+          <div><dt>WebSocket FPS</dt><dd id="info-fps">—</dd></div>
+          <div><dt>WS Clients</dt><dd id="info-clients">—</dd></div>
+          <div><dt>Firmware</dt><dd id="info-firmware">—</dd></div>
+          <div><dt>Active Pattern</dt><dd id="info-pattern">—</dd></div>
+        </dl>
+        <div class="btn-row">
+          <button type="button" id="reboot-btn" class="btn btn-danger">Reboot Device</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Wi-Fi Setup</h2>
+        <label>
+          SSID
+          <input type="text" id="wifi-ssid" maxlength="32" placeholder="Network name">
+        </label>
+        <label>
+          Password
+          <input type="password" id="wifi-password" maxlength="64" placeholder="Network password">
+        </label>
+        <div class="btn-row">
+          <button type="button" id="save-wifi" class="btn btn-primary">Save Wi-Fi</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Firmware Update (OTA)</h2>
+        <p class="hint">Upload a <code>firmware.bin</code> built by PlatformIO. The device reboots after a successful update.</p>
+        <label class="file-upload">
+          Firmware image
+          <input type="file" id="ota-file" accept=".bin,application/octet-stream">
+        </label>
+        <div class="ota-progress hidden" id="ota-progress-wrap">
+          <div class="ota-bar"><div class="ota-bar-fill" id="ota-bar-fill"></div></div>
+          <span id="ota-progress-text">0%</span>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="ota-upload-btn" class="btn btn-primary">Upload Firmware</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Advanced</h2>
+        <label>
+          Color order
+          <select id="color-order">
+            <option value="GRB" selected>GRB (WS2812B default)</option>
+            <option value="RGB">RGB</option>
+            <option value="RBG">RBG</option>
+            <option value="BRG">BRG</option>
+            <option value="BGR">BGR</option>
+            <option value="GBR">GBR</option>
+          </select>
+        </label>
+        <fieldset class="reverse-fieldset">
+          <legend>Reverse edge direction</legend>
+          <label class="checkbox-row"><input type="checkbox" id="rev-left"> Left</label>
+          <label class="checkbox-row"><input type="checkbox" id="rev-top"> Top</label>
+          <label class="checkbox-row"><input type="checkbox" id="rev-right"> Right</label>
+          <label class="checkbox-row"><input type="checkbox" id="rev-bottom"> Bottom</label>
+        </fieldset>
+        <div class="btn-row">
+          <button type="button" id="export-config" class="btn btn-ghost">Export JSON</button>
+          <button type="button" id="import-config" class="btn btn-ghost">Import JSON</button>
+          <input type="file" id="import-file" accept="application/json" hidden>
+        </div>
+        <div class="btn-row">
+          <button type="button" id="save-advanced" class="btn btn-primary">Save Advanced</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span id="toast" class="toast hidden"></span>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
