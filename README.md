@@ -16,6 +16,7 @@ Firmware for the **Seeed Studio XIAO ESP32-C3** that drives a WS2812B LED strip 
 - Access Point + captive portal when Wi-Fi is not configured
 - REST JSON API (`/api/config`, `/api/status`, `/api/reboot`, `/api/testpattern`)
 - Binary WebSocket on `/ws` for 30–60 FPS RGB streaming
+- Idle sleep: fades LEDs off after ~10s without stream frames
 - JSON WebSocket commands for debugging
 - Responsive web UI (vanilla JS)
 - LED layout preview with index numbering
@@ -127,20 +128,45 @@ Use the **Edge ID** test pattern to verify physical wiring:
 - Right = Blue
 - Bottom = White
 
+## Desktop Streamer (Windows)
+
+The **BacklightStreamer** app captures your monitor edges via DXGI desktop duplication, averages colour in small boxes per LED sample point, and streams binary WebSocket frames to the ESP32.
+
+### Build locally
+
+Requires [.NET 8 SDK](https://dotnet.microsoft.com/download).
+
+```bash
+cd desktop/BacklightStreamer
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ../../publish/desktop
+```
+
+Run `publish/desktop/BacklightStreamer.exe`.
+
+### Configuration
+
+- **Device host** — IP or hostname of the ESP32 (e.g. `192.168.3.180` or `backlight.local`)
+- **Monitor** — which display to capture
+- **Custom capture region** — optional crop within the monitor (useful for ultrawide or letterboxed content)
+- **Border inset / sample radius** — inset from the screen edge, and how far inward each LED averages
+- **Target FPS / blend FPS** — capture rate vs interpolated send rate to the ESP32
+- **Brightness** — live device brightness control (0–255)
+- **Live preview** — capture thumbnail with inset/radius guides and edge colour glows
+- **Sync layout** — pulls LED edge indices from `GET /api/config` so sample points match the web UI layout
+- **Start on boot** — adds a registry Run entry (`--minimized` to tray)
+
+Settings are stored in `%AppData%\\BacklightStreamer\\settings.json`.
+
+### CI builds
+
+Pushes to `main` that touch `desktop/` trigger [.github/workflows/desktop.yml](.github/workflows/desktop.yml), which publishes `BacklightStreamer.exe` as a workflow artifact.
+
 ## Project Structure
 
 ```
-src/
-  main.cpp           — Entry point
-  config.*           — NVS configuration
-  led_controller.*   — FastLED rendering & test patterns
-  webserver.*        — Wi-Fi, HTTP, REST API
-  websocket.*        — WebSocket handler
-  ota.*              — OTA updates (web + ArduinoOTA)
-data/
-  index.html         — Web UI
-  style.css
-  app.js
+src/                 — ESP32 firmware
+data/                — Web UI (LittleFS)
+desktop/BacklightStreamer/  — Windows streamer app
 platformio.ini
 ```
 

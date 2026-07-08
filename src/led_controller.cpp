@@ -77,11 +77,15 @@ void LedController::applyConfig() {
 
 void LedController::setBrightness(uint8_t brightness) {
     _brightness = brightness;
-    FastLED.setBrightness(_brightness);
+    if (_sleepState != SleepState::Fading) {
+        FastLED.setBrightness(_brightness);
+    }
 }
 
 void LedController::show() {
-    FastLED.setBrightness(_brightness);
+    if (_sleepState != SleepState::Fading) {
+        FastLED.setBrightness(_brightness);
+    }
     FastLED.show();
 }
 
@@ -93,9 +97,63 @@ void LedController::fillSolid(CRGB color) {
     fill_solid(_leds, _activeCount, color);
 }
 
+void LedController::cancelSleepFade() {
+    if (_sleepState == SleepState::Fading) {
+        FastLED.setBrightness(_brightness);
+    }
+    _sleepState = SleepState::Awake;
+}
+
+void LedController::enterAsleep() {
+    clear();
+    FastLED.setBrightness(_brightness);
+    FastLED.show();
+    _sleepState = SleepState::Asleep;
+}
+
+void LedController::markStreamActivity() {
+    _lastStreamActivityMs = millis();
+    cancelSleepFade();
+}
+
+void LedController::updateIdleSleep() {
+    if (!_initialized) return;
+    if (_testPattern != TestPattern::None) return;
+
+    uint32_t now = millis();
+
+    if (_sleepState == SleepState::Asleep) return;
+
+    if (_sleepState == SleepState::Awake) {
+        if (_lastStreamActivityMs == 0) return;
+        if (now - _lastStreamActivityMs < kIdleSleepMs) return;
+
+        _sleepState = SleepState::Fading;
+        _sleepFadeStartMs = now;
+        _sleepFadeStartBrightness = _brightness;
+        if (_sleepFadeStartBrightness == 0) {
+            enterAsleep();
+        }
+        return;
+    }
+
+    // Fading
+    uint32_t elapsed = now - _sleepFadeStartMs;
+    if (elapsed >= kSleepFadeMs) {
+        enterAsleep();
+        return;
+    }
+
+    uint8_t level = (uint8_t)((uint32_t)_sleepFadeStartBrightness *
+                              (kSleepFadeMs - elapsed) / kSleepFadeMs);
+    FastLED.setBrightness(level);
+    FastLED.show();
+}
+
 void LedController::setFromRgb(const uint8_t* rgb, uint16_t count) {
     if (!_initialized || !rgb) return;
     _testPattern = TestPattern::None;
+    markStreamActivity();
 
     if (count > _activeCount) count = _activeCount;
 
@@ -107,6 +165,46 @@ void LedController::setFromRgb(const uint8_t* rgb, uint16_t count) {
     }
     for (uint16_t i = count; i < _activeCount; i++) {
         _leds[i] = CRGB::Black;
+    }
+
+    show();
+}
+
+void LedController::setFromStreamRgb(const uint8_t* rgb, uint16_t streamCount) {
+    if (!_initialized || !rgb || streamCount == 0) return;
+    _testPattern = TestPattern::None;
+    markStreamActivity();
+
+    clear();
+
+    const auto& cfg = ConfigManager::instance().config();
+    uint16_t streamIdx = 0;
+
+    for (uint8_t edgeIndex = 0; edgeIndex < 4; edgeIndex++) {
+        const EdgeRange& edge = ConfigManager::edgeByIndex(cfg, edgeIndex);
+        bool reverse = ConfigManager::reverseByIndex(cfg, edgeIndex);
+
+        int step = (edge.start <= edge.end) ? 1 : -1;
+        if (reverse) step = -step;
+
+        uint16_t idx = edge.start;
+        while (true) {
+            if (streamIdx >= streamCount) {
+                show();
+                return;
+            }
+
+            if (idx < _activeCount) {
+                _leds[idx] = CRGB(rgb[streamIdx * 3], rgb[streamIdx * 3 + 1], rgb[streamIdx * 3 + 2]);
+                if (_gammaEnabled) {
+                    _leds[idx] = applyPixelGamma(_leds[idx], true);
+                }
+            }
+
+            streamIdx++;
+            if (idx == edge.end) break;
+            idx = static_cast<uint16_t>(idx + step);
+        }
     }
 
     show();
@@ -144,6 +242,7 @@ void LedController::fillEdge(uint8_t edgeIndex, CRGB color) {
 }
 
 void LedController::setTestPattern(TestPattern pattern) {
+    cancelSleepFade();
     _testPattern = pattern;
     _patternTick = millis();
     _patternPhase = 0;
@@ -153,6 +252,8 @@ void LedController::setTestPattern(TestPattern pattern) {
             clear();
             show();
             _testPattern = TestPattern::None;
+            _sleepState = SleepState::Asleep;
+            _lastStreamActivityMs = 0;
             break;
         case TestPattern::SolidWhite: fillSolid(CRGB::White); show(); break;
         case TestPattern::SolidRed: fillSolid(CRGB::Red); show(); break;

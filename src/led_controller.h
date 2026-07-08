@@ -34,6 +34,7 @@ public:
 
     // Copy RGB data from external buffer (no allocation)
     void setFromRgb(const uint8_t* rgb, uint16_t count);
+    void setFromStreamRgb(const uint8_t* rgb, uint16_t streamCount);
 
     void clear();
     void fillSolid(CRGB color);
@@ -42,6 +43,7 @@ public:
     void setTestPattern(TestPattern pattern);
     TestPattern activeTestPattern() const { return _testPattern; }
     void updateTestPattern();  // Call from loop when pattern active
+    void updateIdleSleep();    // Fade to off after stream inactivity
 
     void stopTestPattern() { _testPattern = TestPattern::None; }
 
@@ -54,10 +56,18 @@ public:
     void playBootAnimation();
 
 private:
+    enum class SleepState : uint8_t { Asleep, Awake, Fading };
+
     LedController() = default;
 
     EOrder configToEOrder(ColorOrder order) const;
     void reinitStrip();
+    void markStreamActivity();
+    void cancelSleepFade();
+    void enterAsleep();
+
+    static constexpr uint32_t kIdleSleepMs = 10000;
+    static constexpr uint32_t kSleepFadeMs = 1500;
 
     CRGB _leds[MAX_LEDS];
     uint16_t _activeCount = 0;
@@ -67,6 +77,11 @@ private:
     uint32_t _patternTick = 0;
     uint16_t _patternPhase = 0;
     bool _initialized = false;
+
+    SleepState _sleepState = SleepState::Asleep;
+    uint32_t _lastStreamActivityMs = 0;
+    uint32_t _sleepFadeStartMs = 0;
+    uint8_t _sleepFadeStartBrightness = 0;
 };
 
 const char* testPatternName(TestPattern p);

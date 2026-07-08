@@ -1,0 +1,163 @@
+<Window x:Class="BacklightStreamer.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Backlight Streamer"
+        Width="720" Height="780"
+        MinWidth="640" MinHeight="680"
+        StateChanged="Window_StateChanged"
+        xmlns:views="clr-namespace:BacklightStreamer.Views"
+        Closing="Window_Closing">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition x:Name="PreviewRowDef" Height="260" MinHeight="120" MaxHeight="720"/>
+      <RowDefinition Height="6"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <StackPanel Grid.Row="0" Margin="0,0,0,12">
+      <TextBlock Text="Backlight Streamer" FontSize="22" FontWeight="Bold"/>
+      <TextBlock Text="Capture screen edges and stream average colours to your ESP32 backlight." Foreground="#666" Margin="0,4,0,0"/>
+    </StackPanel>
+
+    <GroupBox x:Name="PreviewPanel" Grid.Row="1" Header="Preview" Margin="0,0,0,0" Padding="12">
+      <views:StreamPreviewControl x:Name="PreviewControl" VerticalAlignment="Stretch"/>
+    </GroupBox>
+
+    <GridSplitter Grid.Row="2"
+                  Height="6"
+                  HorizontalAlignment="Stretch"
+                  VerticalAlignment="Center"
+                  Background="#D1D5DB"
+                  Cursor="SizeNS"
+                  ShowsPreview="True"
+                  ResizeDirection="Rows"
+                  ResizeBehavior="PreviousAndNext"
+                  DragCompleted="PreviewSplitter_DragCompleted"/>
+
+    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Margin="0,6,0,0">
+      <StackPanel>
+        <GroupBox Header="Device" Margin="0,0,0,12" Padding="12">
+          <StackPanel>
+            <TextBlock Text="Device host (IP or hostname)"/>
+            <TextBox x:Name="HostBox" Margin="0,4,0,8"/>
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="ConnectBtn" Content="Connect" Width="100" Margin="0,0,8,0" Click="ConnectBtn_Click"/>
+              <Button x:Name="DisconnectBtn" Content="Disconnect" Width="100" Margin="0,0,8,0" Click="DisconnectBtn_Click"/>
+              <Button x:Name="SyncLayoutBtn" Content="Sync layout" Width="100" Click="SyncLayoutBtn_Click"/>
+            </StackPanel>
+            <TextBlock x:Name="LayoutSummaryText" Margin="0,8,0,8" TextWrapping="Wrap" Foreground="#444"/>
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Brightness"/>
+              <TextBlock x:Name="BrightnessValueText" Grid.Column="1" Foreground="#555" MinWidth="32" TextAlignment="Right"/>
+            </Grid>
+            <Slider x:Name="BrightnessSlider" Minimum="0" Maximum="255" TickFrequency="1" IsSnapToTickEnabled="True"
+                    IsEnabled="False" ValueChanged="BrightnessSlider_ValueChanged"/>
+          </StackPanel>
+        </GroupBox>
+
+        <GroupBox Header="Capture" Margin="0,0,0,12" Padding="12">
+          <StackPanel>
+            <TextBlock Text="Monitor"/>
+            <ComboBox x:Name="MonitorCombo" Margin="0,4,0,8" SelectionChanged="MonitorCombo_SelectionChanged"/>
+            <CheckBox x:Name="CustomRegionCheck" Content="Use custom capture region (relative to monitor)" Margin="0,0,0,8" Checked="CustomRegionCheck_Changed" Unchecked="CustomRegionCheck_Changed"/>
+            <UniformGrid Columns="2" Margin="0,0,0,8">
+              <StackPanel Margin="0,0,8,0">
+                <TextBlock Text="X"/>
+                <TextBox x:Name="CaptureXBox"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Y"/>
+                <TextBox x:Name="CaptureYBox"/>
+              </StackPanel>
+              <StackPanel Margin="0,8,8,0">
+                <TextBlock Text="Width"/>
+                <TextBox x:Name="CaptureWidthBox"/>
+              </StackPanel>
+              <StackPanel Margin="0,8,0,0">
+                <TextBlock Text="Height"/>
+                <TextBox x:Name="CaptureHeightBox"/>
+              </StackPanel>
+            </UniformGrid>
+            <Button Content="Use full monitor" Click="UseFullMonitor_Click" HorizontalAlignment="Left"/>
+          </StackPanel>
+        </GroupBox>
+
+        <GroupBox Header="Sampling" Margin="0,0,0,12" Padding="12">
+          <StackPanel>
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Border inset (px from screen edge)"/>
+              <TextBlock x:Name="InsetValueText" Grid.Column="1" Foreground="#555" MinWidth="32" TextAlignment="Right"/>
+            </Grid>
+            <Slider x:Name="InsetSlider" Minimum="0" Maximum="160" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,0,0,12" ValueChanged="SamplingSlider_ValueChanged"/>
+
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Sample radius (px inward from inset)"/>
+              <TextBlock x:Name="RadiusValueText" Grid.Column="1" Foreground="#555" MinWidth="32" TextAlignment="Right"/>
+            </Grid>
+            <Slider x:Name="RadiusSlider" Minimum="1" Maximum="300" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,0,0,12" ValueChanged="SamplingSlider_ValueChanged"/>
+
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Target FPS"/>
+              <TextBlock x:Name="FpsValueText" Grid.Column="1" Foreground="#555" MinWidth="32" TextAlignment="Right"/>
+            </Grid>
+            <Slider x:Name="FpsSlider" Minimum="1" Maximum="120" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,0,0,12" ValueChanged="SamplingSlider_ValueChanged"/>
+
+            <Grid Margin="0,0,0,4">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="Blend FPS — interpolated sends between captures (0 = off)"/>
+              <TextBlock x:Name="SmoothingValueText" Grid.Column="1" Foreground="#555" MinWidth="32" TextAlignment="Right"/>
+            </Grid>
+            <Slider x:Name="SmoothingSlider" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" ValueChanged="SamplingSlider_ValueChanged"/>
+          </StackPanel>
+        </GroupBox>
+
+        <GroupBox Header="Startup" Margin="0,0,0,12" Padding="12">
+          <StackPanel>
+            <CheckBox x:Name="AutoConnectCheck" Content="Connect automatically on launch" IsChecked="True" Margin="0,0,0,6" Checked="Setting_Changed" Unchecked="Setting_Changed"/>
+            <CheckBox x:Name="AutoStreamCheck" Content="Start streaming after connect" Margin="0,0,0,6" Checked="Setting_Changed" Unchecked="Setting_Changed"/>
+            <CheckBox x:Name="StartOnBootCheck" Content="Start on Windows login" Margin="0,0,0,6" Checked="Setting_Changed" Unchecked="Setting_Changed"/>
+            <CheckBox x:Name="StartMinimizedCheck" Content="Start minimized to tray" Margin="0,0,0,6" Checked="Setting_Changed" Unchecked="Setting_Changed"/>
+            <CheckBox x:Name="MinimizeToTrayCheck" Content="Minimize / close to system tray" IsChecked="True" Checked="Setting_Changed" Unchecked="Setting_Changed"/>
+          </StackPanel>
+        </GroupBox>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="4" Margin="0,12,0,0" Padding="12" Background="#F3F4F6" CornerRadius="8">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel>
+          <TextBlock x:Name="StatusText" FontWeight="SemiBold"/>
+          <TextBlock x:Name="FpsText" Foreground="#555" Margin="0,4,0,0"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button x:Name="StreamBtn" Content="Start streaming" Width="130" Click="StreamBtn_Click"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

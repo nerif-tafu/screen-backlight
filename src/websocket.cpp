@@ -47,15 +47,15 @@ void WebSocketHandler::handleBinaryFrame(AsyncWebSocketClient* client, uint8_t* 
 
     size_t expected = 4 + (size_t)ledCount * 3;
     if (len != expected) return;
-    if (ledCount > ConfigManager::instance().config().totalLedCount) return;
     if (ledCount > MAX_LEDS) return;
+    if (ledCount > ConfigManager::instance().layoutTotal()) return;
     if (!shouldAcceptFrame()) return;
 
     _lastFrameNumber = frameNumber;
     _frameCount++;
     _fpsWindowFrames++;
 
-    LedController::instance().setFromRgb(data + 4, ledCount);
+    LedController::instance().setFromStreamRgb(data + 4, ledCount);
 }
 
 void WebSocketHandler::handleJsonCommand(AsyncWebSocketClient* client, const char* json, size_t len) {

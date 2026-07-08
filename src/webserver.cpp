@@ -305,4 +305,5 @@ void WebServerManager::loop() {
     }
 
     LedController::instance().updateTestPattern();
+    LedController::instance().updateIdleSleep();
 }
