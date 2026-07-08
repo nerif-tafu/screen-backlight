@@ -45,6 +45,17 @@ First boot without Wi-Fi credentials starts AP **`Backlight-Setup`**. Connect an
 
 When connected to your network, use `http://backlight.local` (mDNS) or the device IP.
 
+### Wi-Fi credentials (optional, local only)
+
+To bake Wi-Fi into firmware for recovery flashes without re-entering credentials in the web UI:
+
+```bash
+cp wifi_secrets.ini.example wifi_secrets.ini
+# Edit [wifi] ssid and password in wifi_secrets.ini
+```
+
+`wifi_secrets.ini` is **gitignored** and read at build time by `scripts/load_wifi_secrets.py`. It is never committed. If the file is missing, builds still work — configure Wi-Fi through the web UI or AP setup portal instead.
+
 ## OTA Updates
 
 The partition table uses dual OTA slots (`partitions.csv`). After the first USB flash, you can update over Wi-Fi.
