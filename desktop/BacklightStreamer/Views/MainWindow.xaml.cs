@@ -26,6 +26,7 @@ public partial class MainWindow : Window
         TrySetWindowIcon();
         Engine.StatusChanged += OnEngineStatusChanged;
         Engine.FramePreview += OnFramePreview;
+        SettingsManager.SettingsChanged += OnExternalSettingsChanged;
         PopulateMonitors();
         LoadSettingsToUi();
         UpdateLayoutSummary();
@@ -326,9 +327,22 @@ public partial class MainWindow : Window
         StreamBtn.IsEnabled = connected;
         BrightnessSlider.IsEnabled = connected;
         StatusText.Text = Engine.Status.Message;
-        FpsText.Text = Engine.Status.Streaming
+        FpsText.Text = Engine.Status.Reconnecting
+            ? Engine.Status.Message
+            : Engine.Status.Streaming
             ? $"Capture {Engine.Status.CaptureFps:F1} FPS · Send {Engine.Status.SendFps:F1} FPS · {Engine.Status.CaptureBackend}"
             : connected ? "Connected — ready to stream" : "Not connected";
+    }
+
+    private void OnExternalSettingsChanged()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (_loadingUi) return;
+            LoadSettingsToUi();
+            App.Api.RestartIfNeeded(Settings);
+            UpdatePreviewGuide();
+        });
     }
 
     private void OnEngineStatusChanged(StreamStatus status)

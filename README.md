@@ -157,6 +157,35 @@ Run `publish/desktop/BacklightStreamer.exe`.
 
 Settings are stored in `%AppData%\\BacklightStreamer\\settings.json`.
 
+### Local HTTP API
+
+When `enableLocalApi` is true (default), the app listens on `http://127.0.0.1:7890/` (`apiPort` setting).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/settings` | All settings |
+| PATCH | `/api/settings` | Partial update (`{"targetFps":30}`) |
+| GET | `/api/settings/{key}` | Single setting |
+| PUT | `/api/settings/{key}` | Set one setting (`{"value":30}` or raw JSON) |
+| GET | `/api/settings/schema` | Setting metadata (type, min, max, description) |
+| GET | `/api/status` | Connection/stream status |
+| POST | `/api/connect` | Connect to device |
+| POST | `/api/disconnect` | Disconnect |
+| POST | `/api/stream/start` | Start streaming |
+| POST | `/api/stream/stop` | Stop streaming |
+| POST | `/api/layout/sync` | Sync LED layout from device |
+
+Example:
+
+```bash
+curl http://127.0.0.1:7890/api/settings/sampleRadius
+curl -X PATCH http://127.0.0.1:7890/api/settings -H "Content-Type: application/json" -d "{\"targetFps\":30}"
+```
+
+### Auto-reconnect
+
+If the ESP32 drops Wi-Fi briefly, the app retries every `reconnectIntervalMs` (default 250ms) while streaming and resumes automatically. Disable with `autoReconnect: false`.
+
 ### CI builds
 
 Pushes to `main` that touch `desktop/` trigger [.github/workflows/desktop.yml](.github/workflows/desktop.yml), which publishes `BacklightStreamer.exe` as a workflow artifact.

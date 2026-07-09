@@ -21,4 +21,8 @@ public sealed class AppSettings
     public bool StartMinimized { get; set; }
     public bool MinimizeToTray { get; set; } = true;
     public bool SyncLayoutFromDevice { get; set; } = true;
+    public bool AutoReconnect { get; set; } = true;
+    public int ReconnectIntervalMs { get; set; } = 250;
+    public int ApiPort { get; set; } = 7890;
+    public bool EnableLocalApi { get; set; } = true;
 }

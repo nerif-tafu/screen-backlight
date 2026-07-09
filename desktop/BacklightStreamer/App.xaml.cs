@@ -9,6 +9,7 @@ public partial class App : System.Windows.Application
 {
     public static AppSettings Settings { get; private set; } = new();
     public static StreamEngine Engine { get; } = new();
+    public static LocalApiServer Api { get; } = new(Engine);
 
     private void Application_Startup(object sender, StartupEventArgs e)
     {
@@ -21,6 +22,19 @@ public partial class App : System.Windows.Application
 
         Settings = SettingsStore.Load();
         StartupService.Apply(Settings.StartOnBoot);
+
+        try
+        {
+            Api.Start(Settings);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                $"Could not start local API on port {Settings.ApiPort}: {ex.Message}",
+                "Backlight Streamer",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
 
         var startMinimized = e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase)
             || Settings.StartMinimized;
@@ -35,6 +49,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        Api.Dispose();
         Engine.Dispose();
         SettingsStore.Save(Settings);
         base.OnExit(e);

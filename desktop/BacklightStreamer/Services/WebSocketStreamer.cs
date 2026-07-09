@@ -21,19 +21,25 @@ public sealed class WebSocketStreamer : IAsyncDisposable
 
         var uri = new Uri(new Uri(host), "/ws");
         _ws = new ClientWebSocket();
-        _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+        _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);
         await _ws.ConnectAsync(uri, ct);
     }
 
-    public async Task SendBinaryAsync(ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    public async Task<bool> SendBinaryAsync(ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (_ws?.State != WebSocketState.Open) return false;
 
         await _sendLock.WaitAsync(ct);
         try
         {
-            if (_ws.State != WebSocketState.Open) return;
+            if (_ws.State != WebSocketState.Open) return false;
             await _ws.SendAsync(payload, WebSocketMessageType.Binary, true, ct);
+            return true;
+        }
+        catch
+        {
+            await InvalidateAsync();
+            return false;
         }
         finally
         {
@@ -41,19 +47,44 @@ public sealed class WebSocketStreamer : IAsyncDisposable
         }
     }
 
-    public async Task SendJsonAsync(string json, CancellationToken ct = default)
+    public async Task<bool> SendJsonAsync(string json, CancellationToken ct = default)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (_ws?.State != WebSocketState.Open) return false;
         var bytes = Encoding.UTF8.GetBytes(json);
         await _sendLock.WaitAsync(ct);
         try
         {
-            if (_ws.State != WebSocketState.Open) return;
+            if (_ws.State != WebSocketState.Open) return false;
             await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+            return true;
+        }
+        catch
+        {
+            await InvalidateAsync();
+            return false;
         }
         finally
         {
             _sendLock.Release();
+        }
+    }
+
+    public async Task InvalidateAsync()
+    {
+        if (_ws == null) return;
+        try
+        {
+            if (_ws.State == WebSocketState.Open)
+                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "lost", CancellationToken.None);
+        }
+        catch
+        {
+            // ignore close errors
+        }
+        finally
+        {
+            _ws.Dispose();
+            _ws = null;
         }
     }
 

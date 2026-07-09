@@ -11,7 +11,7 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <AssemblyName>BacklightStreamer</AssemblyName>
     <RootNamespace>BacklightStreamer</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Description>Ambient monitor backlight streamer for ESP32</Description>
   </PropertyGroup>
 

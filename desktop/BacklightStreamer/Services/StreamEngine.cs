@@ -14,33 +14,48 @@ public sealed class StreamEngine : IDisposable
     private readonly CompositeScreenCapture _capture = new();
     private readonly LedLayoutMapper _mapper = new();
     private readonly FrameInterpolator _interpolator = new();
+    private readonly SemaphoreSlim _reconnectLock = new(1, 1);
 
     private CancellationTokenSource? _loopCts;
     private Task? _loopTask;
+    private CancellationTokenSource? _watchdogCts;
+    private Task? _watchdogTask;
     private byte[]? _frameBuffer;
     private byte[]? _stripRgbBuffer;
     private byte[]? _outputRgbBuffer;
     private byte[]? _packetBuffer;
     private ushort _frameNumber;
     private long _lastPreviewTicks;
+    private bool _autoReconnectEnabled;
+    private bool _streamDesired;
+    private AppSettings? _activeSettings;
 
     public DeviceConfig? DeviceConfig { get; private set; }
     public StreamStatus Status { get; private set; } = new();
 
     public async Task ConnectAsync(AppSettings settings, CancellationToken ct = default)
     {
-        DeviceConfig = await _api.FetchConfigAsync(settings.DeviceHost, ct)
-            ?? throw new InvalidOperationException("Could not load device config.");
-
-        await _ws.ConnectAsync(settings.DeviceHost, ct);
-        UpdateStatus(s => s with { Connected = true, Message = "Connected" });
+        _activeSettings = settings;
+        _autoReconnectEnabled = true;
+        if (!await EstablishConnectionAsync(settings, ct, userInitiated: true))
+            throw new InvalidOperationException(Status.Message);
+        StartWatchdog(settings);
     }
 
     public async Task DisconnectAsync()
     {
+        _autoReconnectEnabled = false;
+        _streamDesired = false;
+        StopWatchdog();
         await StopStreamingAsync();
         await _ws.DisconnectAsync();
-        UpdateStatus(s => s with { Connected = false, Streaming = false, Message = "Disconnected" });
+        UpdateStatus(s => s with
+        {
+            Connected = false,
+            Streaming = false,
+            Reconnecting = false,
+            Message = "Disconnected"
+        });
     }
 
     public async Task RefreshLayoutAsync(AppSettings settings, CancellationToken ct = default)
@@ -64,6 +79,8 @@ public sealed class StreamEngine : IDisposable
 
     public Task StartStreamingAsync(AppSettings settings)
     {
+        _activeSettings = settings;
+        _streamDesired = true;
         if (_loopTask != null) return Task.CompletedTask;
         if (DeviceConfig == null)
             throw new InvalidOperationException("Connect to device first.");
@@ -76,6 +93,7 @@ public sealed class StreamEngine : IDisposable
 
     public async Task StopStreamingAsync()
     {
+        _streamDesired = false;
         if (_loopCts == null) return;
         _loopCts.Cancel();
         try
@@ -91,8 +109,159 @@ public sealed class StreamEngine : IDisposable
             _loopCts.Dispose();
             _loopCts = null;
             _loopTask = null;
-            UpdateStatus(s => s with { Streaming = false, CaptureFps = 0, SendFps = 0, Message = "Stream stopped" });
+            UpdateStatus(s => s with { Streaming = false, CaptureFps = 0, SendFps = 0, Message = Status.Connected ? "Connected — stream stopped" : Status.Message });
         }
+    }
+
+    private void StartWatchdog(AppSettings settings)
+    {
+        StopWatchdog();
+        _watchdogCts = new CancellationTokenSource();
+        _watchdogTask = Task.Run(() => WatchdogLoop(_watchdogCts.Token));
+    }
+
+    private void StopWatchdog()
+    {
+        _watchdogCts?.Cancel();
+        _watchdogCts?.Dispose();
+        _watchdogCts = null;
+        _watchdogTask = null;
+    }
+
+    private async Task WatchdogLoop(CancellationToken ct)
+    {
+        var healthCheckAt = 0L;
+        while (!ct.IsCancellationRequested)
+        {
+            var settings = _activeSettings ?? App.Settings;
+            try
+            {
+                if (_autoReconnectEnabled && settings.AutoReconnect)
+                {
+                    if (!_ws.IsConnected)
+                    {
+                        await TryReconnectAsync(settings, ct);
+                    }
+                    else if (Environment.TickCount64 - healthCheckAt >= 2000)
+                    {
+                        healthCheckAt = Environment.TickCount64;
+                        if (!await PingDeviceAsync(settings, ct))
+                            await MarkConnectionLostAsync("Device unreachable");
+                    }
+                }
+
+                if (_streamDesired && _loopTask is { IsCompleted: true } && _activeSettings != null)
+                {
+                    _loopTask = null;
+                    _loopCts?.Dispose();
+                    _loopCts = new CancellationTokenSource();
+                    _loopTask = Task.Run(() => StreamLoop(_activeSettings, _loopCts.Token));
+                    UpdateStatus(s => s with { Streaming = true, Message = "Resuming stream…" });
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // keep watchdog alive
+            }
+
+            var delay = Math.Clamp(settings.ReconnectIntervalMs, 100, 5000);
+            try
+            {
+                await Task.Delay(delay, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task<bool> PingDeviceAsync(AppSettings settings, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(2));
+            return await _api.FetchConfigAsync(settings.DeviceHost, cts.Token) != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> TryReconnectAsync(AppSettings settings, CancellationToken ct)
+    {
+        if (!await _reconnectLock.WaitAsync(0, ct))
+            return _ws.IsConnected;
+
+        try
+        {
+            if (_ws.IsConnected) return true;
+
+            UpdateStatus(s => s with
+            {
+                Connected = false,
+                Reconnecting = true,
+                Message = "Reconnecting…"
+            });
+
+            return await EstablishConnectionAsync(settings, ct, userInitiated: false);
+        }
+        finally
+        {
+            _reconnectLock.Release();
+        }
+    }
+
+    private async Task<bool> EstablishConnectionAsync(AppSettings settings, CancellationToken ct, bool userInitiated)
+    {
+        try
+        {
+            DeviceConfig = await _api.FetchConfigAsync(settings.DeviceHost, ct)
+                ?? throw new InvalidOperationException("Could not load device config.");
+
+            await _ws.ConnectAsync(settings.DeviceHost, ct);
+            UpdateStatus(s => s with
+            {
+                Connected = true,
+                Reconnecting = false,
+                Message = userInitiated ? "Connected" : "Reconnected"
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus(s => s with
+            {
+                Connected = false,
+                Reconnecting = _autoReconnectEnabled && settings.AutoReconnect,
+                Message = userInitiated ? ex.Message : "Reconnecting…"
+            });
+            return false;
+        }
+    }
+
+    private async Task<bool> EnsureConnectedAsync(AppSettings settings, CancellationToken ct)
+    {
+        if (_ws.IsConnected) return true;
+        if (!_autoReconnectEnabled || !settings.AutoReconnect) return false;
+        return await TryReconnectAsync(settings, ct);
+    }
+
+    private async Task MarkConnectionLostAsync(string message)
+    {
+        await _ws.InvalidateAsync();
+        UpdateStatus(s => s with
+        {
+            Connected = false,
+            Reconnecting = _autoReconnectEnabled && (_activeSettings?.AutoReconnect ?? true),
+            Message = message
+        });
     }
 
     private async Task StreamLoop(AppSettings settings, CancellationToken ct)
@@ -113,7 +282,8 @@ public sealed class StreamEngine : IDisposable
         _frameNumber = 0;
         _interpolator.Reset(stripCount * 3);
 
-        await _ws.SendJsonAsync("{\"cmd\":\"off\"}", ct);
+        if (await EnsureConnectedAsync(settings, ct))
+            await _ws.SendJsonAsync("{\"cmd\":\"off\"}", ct);
 
         var sw = Stopwatch.StartNew();
         var captureCount = 0;
@@ -200,11 +370,20 @@ public sealed class StreamEngine : IDisposable
                         _interpolator.WriteBlend(t, _outputRgbBuffer!);
                     }
 
-                    StreamPacketBuilder.PackStreamFrame(_outputRgbBuffer!, config, _packetBuffer.AsSpan(4));
-                    WriteHeader(_packetBuffer, ++_frameNumber, streamCount);
-                    await _ws.SendBinaryAsync(_packetBuffer, ct);
-                    sendCount++;
-                    EmitPreview(config, captureBackend, settings);
+                    if (await EnsureConnectedAsync(settings, ct))
+                    {
+                        StreamPacketBuilder.PackStreamFrame(_outputRgbBuffer!, config, _packetBuffer.AsSpan(4));
+                        WriteHeader(_packetBuffer, ++_frameNumber, streamCount);
+                        if (await _ws.SendBinaryAsync(_packetBuffer, ct))
+                        {
+                            sendCount++;
+                            EmitPreview(config, captureBackend, settings);
+                        }
+                        else
+                        {
+                            await MarkConnectionLostAsync("Connection lost — reconnecting…");
+                        }
+                    }
 
                     if (interpolate)
                         nextSendAt = now + sendInterval;
@@ -345,9 +524,12 @@ public sealed class StreamEngine : IDisposable
 
     public void Dispose()
     {
+        _autoReconnectEnabled = false;
+        StopWatchdog();
         _loopCts?.Cancel();
         _capture.Dispose();
         _api.Dispose();
+        _reconnectLock.Dispose();
         _ = _ws.DisposeAsync();
     }
 }
@@ -355,6 +537,7 @@ public sealed class StreamEngine : IDisposable
 public record StreamStatus(
     bool Connected = false,
     bool Streaming = false,
+    bool Reconnecting = false,
     double CaptureFps = 0,
     double SendFps = 0,
     string Message = "Idle",
