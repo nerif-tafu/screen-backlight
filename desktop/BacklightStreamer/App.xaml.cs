@@ -13,6 +13,19 @@ public partial class App : System.Windows.Application
 
     private void Application_Startup(object sender, StartupEventArgs e)
     {
+        // An ambient backlight should never compete with a game for CPU time;
+        // below-normal priority keeps the stream running while yielding under
+        // load. Costs at most a little LED latency during full CPU saturation.
+        try
+        {
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            process.PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal;
+        }
+        catch
+        {
+            // not critical if the priority can't be changed
+        }
+
         DispatcherUnhandledException += (_, args) =>
         {
             System.Windows.MessageBox.Show(args.Exception.Message, "Backlight Streamer error",

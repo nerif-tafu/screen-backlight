@@ -18,14 +18,19 @@ public static class StartupService
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, true)
             ?? Registry.CurrentUser.CreateSubKey(RunKeyPath, true);
 
+        var current = key.GetValue(ValueName) as string;
+
         if (!enabled)
         {
-            key.DeleteValue(ValueName, false);
+            if (current != null)
+                key.DeleteValue(ValueName, false);
             return;
         }
 
         var exe = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exe)) return;
-        key.SetValue(ValueName, $"\"{exe}\" --minimized");
+        var desired = $"\"{exe}\" --minimized";
+        if (current != desired)
+            key.SetValue(ValueName, desired);
     }
 }

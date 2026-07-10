@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private NotifyIcon? _tray;
     private bool _forceClose;
     private bool _loadingUi;
+    private StreamFramePreview? _pendingPreview;
     private System.Windows.Threading.DispatcherTimer? _saveDebounceTimer;
     private System.Windows.Threading.DispatcherTimer? _brightnessDebounceTimer;
     private AppSettings Settings => App.Settings;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
         Engine.StatusChanged += OnEngineStatusChanged;
         Engine.FramePreview += OnFramePreview;
         SettingsManager.SettingsChanged += OnExternalSettingsChanged;
+        IsVisibleChanged += (_, _) => UpdatePreviewGate();
         PopulateMonitors();
         LoadSettingsToUi();
         UpdateLayoutSummary();
@@ -168,7 +170,7 @@ public partial class MainWindow : Window
 
         UpdateBrightnessLabel();
         Settings.Brightness = (int)BrightnessSlider.Value;
-        PersistSettings();
+        SchedulePersistSettings();
         ScheduleBrightnessApply();
     }
 
@@ -236,7 +238,9 @@ public partial class MainWindow : Window
         UpdateSliderLabels();
         ApplySliderSettings();
         UpdatePreviewGuide();
-        PersistSettings();
+        // Debounced: dragging a slider fires many times per second, and each
+        // persist writes settings.json plus the startup registry key.
+        SchedulePersistSettings();
     }
 
     private void SyncUiToSettings()
@@ -347,7 +351,8 @@ public partial class MainWindow : Window
 
     private void OnEngineStatusChanged(StreamStatus status)
     {
-        Dispatcher.Invoke(() =>
+        // BeginInvoke: never block the capture/stream thread on the UI.
+        Dispatcher.BeginInvoke(() =>
         {
             UpdateControls();
             if (_tray != null)
@@ -359,11 +364,27 @@ public partial class MainWindow : Window
 
     private void OnFramePreview(StreamFramePreview preview)
     {
-        Dispatcher.Invoke(() => PreviewControl.UpdatePreview(preview));
+        // Keep only the latest frame; if the UI is busy, older previews are
+        // dropped instead of queueing dispatcher work behind them.
+        if (Interlocked.Exchange(ref _pendingPreview, preview) == null)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                var pending = Interlocked.Exchange(ref _pendingPreview, null);
+                if (pending != null)
+                    PreviewControl.UpdatePreview(pending);
+            });
+        }
+    }
+
+    private void UpdatePreviewGate()
+    {
+        Engine.PreviewEnabled = IsVisible && WindowState != WindowState.Minimized;
     }
 
     private void Window_StateChanged(object? sender, EventArgs e)
     {
+        UpdatePreviewGate();
         if (WindowState == WindowState.Minimized && MinimizeToTrayCheck.IsChecked == true)
             HideToTray();
     }

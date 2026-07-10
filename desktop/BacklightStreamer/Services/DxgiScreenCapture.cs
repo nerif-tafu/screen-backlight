@@ -13,7 +13,12 @@ public sealed class DxgiScreenCapture : IScreenCapture
     private IDXGIAdapter1? _adapter;
     private Device? _device;
     private IDXGIOutputDuplication? _duplication;
-    private ID3D11Texture2D? _staging;
+    private ID3D11Texture2D? _stagingFull;
+    private ID3D11Texture2D? _stagingTop;
+    private ID3D11Texture2D? _stagingBottom;
+    private ID3D11Texture2D? _stagingLeft;
+    private ID3D11Texture2D? _stagingRight;
+    private int _bandThickness;
     private int _left;
     private int _top;
     private int _width;
@@ -49,11 +54,135 @@ public sealed class DxgiScreenCapture : IScreenCapture
             out _device).CheckError();
 
         _duplication = targetOutput.DuplicateOutput(_device!);
+        _initialized = true;
+        targetOutput.Dispose();
+    }
 
+    public CaptureResult TryCapture(Span<byte> bgraBuffer, out int stride)
+    {
+        stride = 0;
+        if (!_initialized || _duplication == null || _device == null)
+            return CaptureResult.Failed;
+
+        var rowBytes = _width * 4;
+        if (bgraBuffer.Length < rowBytes * _height)
+            return CaptureResult.Failed;
+
+        _stagingFull ??= CreateStaging(_width, _height);
+
+        var result = _duplication.AcquireNextFrame(100, out _, out var desktopResource);
+        if (result == Vortice.DXGI.ResultCode.WaitTimeout)
+            return CaptureResult.NoNewFrame;
+        if (result.Failure)
+        {
+            _initialized = false;
+            return CaptureResult.Failed;
+        }
+
+        try
+        {
+            using var desktopTexture = desktopResource.QueryInterface<ID3D11Texture2D>();
+            CopyRegion(desktopTexture, _stagingFull, _left, _top, _width, _height);
+            ReadStaging(_stagingFull, bgraBuffer, _width, _height);
+            stride = rowBytes;
+        }
+        finally
+        {
+            _duplication.ReleaseFrame();
+        }
+
+        return CaptureResult.FrameCaptured;
+    }
+
+    public CaptureResult TryCaptureBands(EdgeBandBuffers bands)
+    {
+        if (!_initialized || _duplication == null || _device == null || !bands.IsConfigured)
+            return CaptureResult.Failed;
+        if (bands.Width != _width || bands.Height != _height)
+            return CaptureResult.Failed;
+
+        EnsureBandStagings(bands.Thickness);
+
+        var result = _duplication.AcquireNextFrame(100, out _, out var desktopResource);
+        if (result == Vortice.DXGI.ResultCode.WaitTimeout)
+            return CaptureResult.NoNewFrame;
+        if (result.Failure)
+        {
+            _initialized = false;
+            return CaptureResult.Failed;
+        }
+
+        var t = bands.Thickness;
+        try
+        {
+            using var desktopTexture = desktopResource.QueryInterface<ID3D11Texture2D>();
+            CopyRegion(desktopTexture, _stagingTop!, _left, _top, _width, t);
+            CopyRegion(desktopTexture, _stagingBottom!, _left, _top + _height - t, _width, t);
+            CopyRegion(desktopTexture, _stagingLeft!, _left, _top, t, _height);
+            CopyRegion(desktopTexture, _stagingRight!, _left + _width - t, _top, t, _height);
+
+            ReadStaging(_stagingTop!, bands.Top, _width, t);
+            ReadStaging(_stagingBottom!, bands.Bottom, _width, t);
+            ReadStaging(_stagingLeft!, bands.Left, t, _height);
+            ReadStaging(_stagingRight!, bands.Right, t, _height);
+        }
+        finally
+        {
+            _duplication.ReleaseFrame();
+        }
+
+        return CaptureResult.FrameCaptured;
+    }
+
+    private void CopyRegion(ID3D11Texture2D src, ID3D11Texture2D dst, int x, int y, int w, int h)
+    {
+        var srcBox = new Box(x, y, 0, x + w, y + h, 1);
+        _device!.ImmediateContext.CopySubresourceRegion(dst, 0, 0, 0, 0, src, 0, srcBox);
+    }
+
+    private void ReadStaging(ID3D11Texture2D staging, Span<byte> dst, int width, int height)
+    {
+        var mapped = _device!.ImmediateContext.Map(staging, 0, MapMode.Read, MapFlags.None);
+        try
+        {
+            var rowBytes = width * 4;
+            if (dst.Length < rowBytes * height)
+                throw new InvalidOperationException("Capture buffer too small.");
+
+            unsafe
+            {
+                var src = (byte*)mapped.DataPointer;
+                fixed (byte* dstBase = dst)
+                {
+                    for (var y = 0; y < height; y++)
+                        Buffer.MemoryCopy(src + y * mapped.RowPitch, dstBase + y * rowBytes, rowBytes, rowBytes);
+                }
+            }
+        }
+        finally
+        {
+            _device.ImmediateContext.Unmap(staging, 0);
+        }
+    }
+
+    private void EnsureBandStagings(int thickness)
+    {
+        if (_bandThickness == thickness && _stagingTop != null) return;
+
+        DisposeBandStagings();
+        _bandThickness = thickness;
+        _stagingTop = CreateStaging(_width, thickness);
+        _stagingBottom = CreateStaging(_width, thickness);
+        _stagingLeft = CreateStaging(thickness, _height);
+        _stagingRight = CreateStaging(thickness, _height);
+    }
+
+    private ID3D11Texture2D CreateStaging(int width, int height)
+    {
         var texDesc = new Texture2DDescription
         {
-            Width = (uint)_width,
-            Height = (uint)_height,
+            Width = (uint)width,
+            Height = (uint)height,
             MipLevels = 1,
             ArraySize = 1,
             Format = Format.B8G8R8A8_UNorm,
@@ -62,63 +191,7 @@ public sealed class DxgiScreenCapture : IScreenCapture
             CPUAccessFlags = CpuAccessFlags.Read,
             BindFlags = BindFlags.None
         };
-        _staging = _device!.CreateTexture2D(texDesc);
-        _initialized = true;
-        targetOutput.Dispose();
-    }
-
-    public bool TryCapture(Span<byte> bgraBuffer, out int stride)
-    {
-        stride = 0;
-        if (!_initialized || _duplication == null || _staging == null || _device == null)
-            return false;
-
-        var result = _duplication.AcquireNextFrame(100, out _, out var desktopResource);
-        if (result == Vortice.DXGI.ResultCode.WaitTimeout)
-            return false;
-        if (result == Vortice.DXGI.ResultCode.AccessLost)
-        {
-            _initialized = false;
-            return false;
-        }
-
-        result.CheckError();
-
-        try
-        {
-            using var desktopTexture = desktopResource.QueryInterface<ID3D11Texture2D>();
-            var srcBox = new Box(_left, _top, 0, _left + _width, _top + _height, 1);
-            _device.ImmediateContext.CopySubresourceRegion(_staging, 0, 0, 0, 0, desktopTexture, 0, srcBox);
-
-            var mapped = _device.ImmediateContext.Map(_staging, 0, MapMode.Read, MapFlags.None);
-            try
-            {
-                stride = (int)mapped.RowPitch;
-                var rowBytes = _width * 4;
-                if (bgraBuffer.Length < rowBytes * _height)
-                    throw new InvalidOperationException("Capture buffer too small.");
-
-                unsafe
-                {
-                    var src = (byte*)mapped.DataPointer;
-                    fixed (byte* dstBase = bgraBuffer)
-                    {
-                        for (var y = 0; y < _height; y++)
-                            Buffer.MemoryCopy(src + y * mapped.RowPitch, dstBase + y * rowBytes, rowBytes, rowBytes);
-                    }
-                }
-            }
-            finally
-            {
-                _device.ImmediateContext.Unmap(_staging, 0);
-            }
-        }
-        finally
-        {
-            _duplication.ReleaseFrame();
-        }
-
-        return true;
+        return _device!.CreateTexture2D(texDesc);
     }
 
     public void Dispose()
@@ -127,13 +200,27 @@ public sealed class DxgiScreenCapture : IScreenCapture
         GC.SuppressFinalize(this);
     }
 
+    private void DisposeBandStagings()
+    {
+        _stagingTop?.Dispose();
+        _stagingBottom?.Dispose();
+        _stagingLeft?.Dispose();
+        _stagingRight?.Dispose();
+        _stagingTop = null;
+        _stagingBottom = null;
+        _stagingLeft = null;
+        _stagingRight = null;
+        _bandThickness = 0;
+    }
+
     private void DisposeGpu()
     {
-        _staging?.Dispose();
+        _stagingFull?.Dispose();
+        DisposeBandStagings();
         _duplication?.Dispose();
         _device?.Dispose();
         _adapter?.Dispose();
-        _staging = null;
+        _stagingFull = null;
         _duplication = null;
         _device = null;
         _adapter = null;

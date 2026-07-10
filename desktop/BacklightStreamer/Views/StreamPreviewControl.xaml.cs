@@ -15,7 +15,38 @@ namespace BacklightStreamer.Views;
 public partial class StreamPreviewControl : UserControl
 {
     private const double Pad = 40;
+
+    // Frozen brushes are shared, thread-free and skip WPF change tracking —
+    // Redraw runs many times per second, so avoid allocating them each pass.
+    private static readonly SolidColorBrush MonitorBackground = Frozen(Color.FromRgb(36, 48, 68));
+    private static readonly SolidColorBrush MonitorBorder = Frozen(Color.FromRgb(45, 58, 79));
+    private static readonly SolidColorBrush ImageHostBackground = Frozen(Color.FromRgb(15, 23, 42));
+    private static readonly SolidColorBrush InsetGuideStroke = Frozen(Color.FromArgb(220, 250, 204, 21));
+    private static readonly SolidColorBrush RegionFill = Frozen(Color.FromArgb(56, 56, 189, 248));
+    private static readonly SolidColorBrush RegionStroke = Frozen(Color.FromArgb(160, 56, 189, 248));
+    private static readonly SolidColorBrush BandFill = Frozen(Color.FromArgb(28, 56, 189, 248));
+    private static readonly SolidColorBrush BandStroke = Frozen(Color.FromArgb(90, 56, 189, 248));
+    private static readonly SolidColorBrush LegendForeground = Frozen(Color.FromRgb(203, 213, 225));
+    private static readonly SolidColorBrush LegendBackground = Frozen(Color.FromArgb(160, 15, 23, 42));
+    private static readonly DoubleCollection InsetDashArray = FrozenDashes(4, 3);
+    private static readonly DoubleCollection BandDashArray = FrozenDashes(3, 2);
+
+    private static SolidColorBrush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private static DoubleCollection FrozenDashes(params double[] dashes)
+    {
+        var collection = new DoubleCollection(dashes);
+        collection.Freeze();
+        return collection;
+    }
+
     private StreamFramePreview? _preview;
+    private WriteableBitmap? _bitmap;
     private byte[]? _cachedCapturePixels;
     private int _cachedCaptureW;
     private int _cachedCaptureH;
@@ -129,8 +160,8 @@ public partial class StreamPreviewControl : UserControl
         {
             Width = _monitorW,
             Height = _monitorH,
-            Background = new SolidColorBrush(Color.FromRgb(36, 48, 68)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(45, 58, 79)),
+            Background = MonitorBackground,
+            BorderBrush = MonitorBorder,
             BorderThickness = new Thickness(2),
             CornerRadius = new CornerRadius(8),
             ClipToBounds = true
@@ -141,14 +172,19 @@ public partial class StreamPreviewControl : UserControl
 
         if (_preview.CapturePixels.Length > 0 && _preview.CaptureWidth > 0 && _preview.CaptureHeight > 0)
         {
-            var bitmap = new WriteableBitmap(
-                _preview.CaptureWidth,
-                _preview.CaptureHeight,
-                96,
-                96,
-                PixelFormats.Bgra32,
-                null);
-            bitmap.WritePixels(
+            if (_bitmap == null
+                || _bitmap.PixelWidth != _preview.CaptureWidth
+                || _bitmap.PixelHeight != _preview.CaptureHeight)
+            {
+                _bitmap = new WriteableBitmap(
+                    _preview.CaptureWidth,
+                    _preview.CaptureHeight,
+                    96,
+                    96,
+                    PixelFormats.Bgra32,
+                    null);
+            }
+            _bitmap.WritePixels(
                 new Int32Rect(0, 0, _preview.CaptureWidth, _preview.CaptureHeight),
                 _preview.CapturePixels,
                 _preview.CaptureWidth * 4,
@@ -158,11 +194,11 @@ public partial class StreamPreviewControl : UserControl
             {
                 Width = _monitorW,
                 Height = _monitorH,
-                Background = new SolidColorBrush(Color.FromRgb(15, 23, 42))
+                Background = ImageHostBackground
             };
             imageHost.Children.Add(new Image
             {
-                Source = bitmap,
+                Source = _bitmap,
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
                 VerticalAlignment = System.Windows.VerticalAlignment.Center
@@ -202,9 +238,9 @@ public partial class StreamPreviewControl : UserControl
         {
             Width = innerW,
             Height = innerH,
-            Stroke = new SolidColorBrush(Color.FromArgb(220, 250, 204, 21)),
+            Stroke = InsetGuideStroke,
             StrokeThickness = 1.5,
-            StrokeDashArray = [4, 3],
+            StrokeDashArray = InsetDashArray,
             Fill = System.Windows.Media.Brushes.Transparent
         };
         Canvas.SetLeft(insetGuide, _contentLeft + insetX);
@@ -224,8 +260,8 @@ public partial class StreamPreviewControl : UserControl
             {
                 Width = Math.Max(1, region.Value.Width * scaleX),
                 Height = Math.Max(1, region.Value.Height * scaleY),
-                Fill = new SolidColorBrush(Color.FromArgb(56, 56, 189, 248)),
-                Stroke = new SolidColorBrush(Color.FromArgb(160, 56, 189, 248)),
+                Fill = RegionFill,
+                Stroke = RegionStroke,
                 StrokeThickness = 1
             };
             Canvas.SetLeft(overlay, _contentLeft + region.Value.Left * scaleX);
@@ -242,10 +278,10 @@ public partial class StreamPreviewControl : UserControl
         {
             Width = width,
             Height = height,
-            Fill = new SolidColorBrush(Color.FromArgb(28, 56, 189, 248)),
-            Stroke = new SolidColorBrush(Color.FromArgb(90, 56, 189, 248)),
+            Fill = BandFill,
+            Stroke = BandStroke,
             StrokeThickness = 1,
-            StrokeDashArray = [3, 2]
+            StrokeDashArray = BandDashArray
         };
         Canvas.SetLeft(band, left);
         Canvas.SetTop(band, top);
@@ -261,8 +297,8 @@ public partial class StreamPreviewControl : UserControl
         {
             Text = $"LED aspect {ledW}:{ledH} · inset {_preview.BorderInset}px · radius {(_preview.DiffusionDepth > 0 ? _preview.DiffusionDepth : _preview.SampleRadius)}px",
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
-            Background = new SolidColorBrush(Color.FromArgb(160, 15, 23, 42)),
+            Foreground = LegendForeground,
+            Background = LegendBackground,
             Padding = new Thickness(6, 3, 6, 3)
         };
         Canvas.SetLeft(legend, _monitorLeft + 6);
@@ -311,23 +347,26 @@ public partial class StreamPreviewControl : UserControl
     {
         const double glowSize = 22;
 
+        var fill = new RadialGradientBrush
+        {
+            GradientOrigin = new Point(0.5, 0.5),
+            Center = new Point(0.5, 0.5),
+            RadiusX = 0.5,
+            RadiusY = 0.5,
+            GradientStops =
+            {
+                new GradientStop(color, 0),
+                new GradientStop(Color.FromArgb(180, color.R, color.G, color.B), 0.35),
+                new GradientStop(Color.FromArgb(0, color.R, color.G, color.B), 1)
+            }
+        };
+        fill.Freeze();
+
         var glow = new Ellipse
         {
             Width = glowSize,
             Height = glowSize,
-            Fill = new RadialGradientBrush
-            {
-                GradientOrigin = new Point(0.5, 0.5),
-                Center = new Point(0.5, 0.5),
-                RadiusX = 0.5,
-                RadiusY = 0.5,
-                GradientStops =
-                {
-                    new GradientStop(color, 0),
-                    new GradientStop(Color.FromArgb(180, color.R, color.G, color.B), 0.35),
-                    new GradientStop(Color.FromArgb(0, color.R, color.G, color.B), 1)
-                }
-            }
+            Fill = fill
         };
 
         Canvas.SetLeft(glow, x - glowSize / 2);

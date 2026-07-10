@@ -13,20 +13,38 @@ public static class PreviewStateBuilder
         int captureHeight = 0,
         byte[]? stripRgb = null,
         string captureBackend = "",
-        bool isLive = false)
+        bool isLive = false,
+        SampleRegion?[]? precomputedRegions = null,
+        Size? sourceSize = null)
     {
-        var captureRect = StreamEngine.ResolveCaptureRect(settings);
-        var localRect = new Rectangle(0, 0, captureRect.Width, captureRect.Height);
+        int sourceW, sourceH;
+        if (sourceSize is { Width: > 0, Height: > 0 } size)
+        {
+            sourceW = size.Width;
+            sourceH = size.Height;
+        }
+        else
+        {
+            var captureRect = StreamEngine.ResolveCaptureRect(settings);
+            sourceW = captureRect.Width;
+            sourceH = captureRect.Height;
+        }
+
+        var localRect = new Rectangle(0, 0, sourceW, sourceH);
         var inset = settings.BorderInset;
         var radius = settings.SampleRadius;
         var depth = LedLayoutMapper.SampleDepth(localRect, inset, radius);
 
-        SampleRegion?[] regions = [];
-        if (config != null)
+        var regions = precomputedRegions;
+        if (regions == null)
         {
-            var mapper = new LedLayoutMapper();
-            mapper.Build(config, localRect, inset, radius);
-            regions = mapper.StripRegions;
+            regions = [];
+            if (config != null)
+            {
+                var mapper = new LedLayoutMapper();
+                mapper.Build(config, localRect, inset, radius);
+                regions = mapper.StripRegions;
+            }
         }
 
         return new StreamFramePreview
@@ -36,8 +54,8 @@ public static class PreviewStateBuilder
             CapturePixels = capturePixels ?? [],
             CaptureWidth = captureWidth,
             CaptureHeight = captureHeight,
-            SourceCaptureWidth = captureRect.Width,
-            SourceCaptureHeight = captureRect.Height,
+            SourceCaptureWidth = sourceW,
+            SourceCaptureHeight = sourceH,
             BorderInset = inset,
             SampleRadius = radius,
             DiffusionDepth = depth,

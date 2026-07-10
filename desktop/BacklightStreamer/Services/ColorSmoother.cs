@@ -49,18 +49,25 @@ public sealed class FrameInterpolator
 
     private static double SmoothStep(double t) => t * t * (3 - 2 * t);
 
+    private static readonly float[] SrgbToLinearLut = BuildSrgbToLinearLut();
+
+    private static float[] BuildSrgbToLinearLut()
+    {
+        var lut = new float[256];
+        for (var i = 0; i < 256; i++)
+        {
+            var s = i / 255f;
+            lut[i] = s <= 0.04045f
+                ? s / 12.92f
+                : MathF.Pow((s + 0.055f) / 1.055f, 2.4f);
+        }
+        return lut;
+    }
+
     private static void CopySrgbToLinear(ReadOnlySpan<byte> srgb, Span<float> linear)
     {
         for (var i = 0; i < srgb.Length; i++)
-            linear[i] = SrgbToLinear(srgb[i]);
-    }
-
-    private static float SrgbToLinear(byte channel)
-    {
-        var s = channel / 255f;
-        return s <= 0.04045f
-            ? s / 12.92f
-            : MathF.Pow((s + 0.055f) / 1.055f, 2.4f);
+            linear[i] = SrgbToLinearLut[srgb[i]];
     }
 
     private static byte LinearToSrgb(float linear)

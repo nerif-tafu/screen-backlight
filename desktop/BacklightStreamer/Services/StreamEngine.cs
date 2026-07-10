@@ -24,14 +24,28 @@ public sealed class StreamEngine : IDisposable
     private byte[]? _stripRgbBuffer;
     private byte[]? _outputRgbBuffer;
     private byte[]? _packetBuffer;
+    private readonly EdgeBandBuffers _bands = new();
+    private bool _bandsUsable;
+    private bool _lastFrameWasFull;
+    private readonly byte[]?[] _previewPixelBuffers = new byte[2][];
+    private readonly byte[]?[] _previewStripBuffers = new byte[2][];
+    private int _previewBufferIndex;
     private ushort _frameNumber;
     private long _lastPreviewTicks;
+    private long _lastSendOkAt;
     private bool _autoReconnectEnabled;
     private bool _streamDesired;
     private AppSettings? _activeSettings;
 
     public DeviceConfig? DeviceConfig { get; private set; }
     public StreamStatus Status { get; private set; } = new();
+
+    /// <summary>
+    /// When false (main window hidden or minimized) the engine captures only
+    /// the screen-edge bands it actually samples and skips preview generation
+    /// entirely, keeping background impact minimal while gaming.
+    /// </summary>
+    public bool PreviewEnabled { get; set; } = true;
 
     public async Task ConnectAsync(AppSettings settings, CancellationToken ct = default)
     {
@@ -142,10 +156,15 @@ public sealed class StreamEngine : IDisposable
                     {
                         await TryReconnectAsync(settings, ct);
                     }
-                    else if (Environment.TickCount64 - healthCheckAt >= 2000)
+                    else if (Environment.TickCount64 - healthCheckAt >= 5000)
                     {
                         healthCheckAt = Environment.TickCount64;
-                        if (!await PingDeviceAsync(settings, ct))
+                        // A recent successful stream send already proves the
+                        // device is reachable — only spend an HTTP ping when
+                        // the socket has been quiet.
+                        var streamHealthy = _streamDesired
+                            && Environment.TickCount64 - Volatile.Read(ref _lastSendOkAt) < 3000;
+                        if (!streamHealthy && !await PingDeviceAsync(settings, ct))
                             await MarkConnectionLostAsync("Device unreachable");
                     }
                 }
@@ -168,7 +187,11 @@ public sealed class StreamEngine : IDisposable
                 // keep watchdog alive
             }
 
-            var delay = Math.Clamp(settings.ReconnectIntervalMs, 100, 5000);
+            // Poll fast only while actually reconnecting; a healthy connection
+            // needs no sub-second wakeups.
+            var delay = _ws.IsConnected
+                ? 1000
+                : Math.Clamp(settings.ReconnectIntervalMs, 100, 5000);
             try
             {
                 await Task.Delay(delay, ct);
@@ -275,12 +298,13 @@ public sealed class StreamEngine : IDisposable
 
         var stripCount = Math.Max(1, config.TotalLedCount);
         var streamCount = StreamPacketBuilder.LayoutLedCount(config);
-        _frameBuffer = new byte[captureRect.Width * captureRect.Height * 4];
+        var frameBytes = captureRect.Width * captureRect.Height * 4;
         _stripRgbBuffer = new byte[stripCount * 3];
         _outputRgbBuffer = new byte[stripCount * 3];
         _packetBuffer = new byte[4 + streamCount * 3];
         _frameNumber = 0;
         _interpolator.Reset(stripCount * 3);
+        ConfigureBands(settings, localRect);
 
         if (await EnsureConnectedAsync(settings, ct))
             await _ws.SendJsonAsync("{\"cmd\":\"off\"}", ct);
@@ -309,6 +333,7 @@ public sealed class StreamEngine : IDisposable
                 if (settings.BorderInset != lastInset || settings.SampleRadius != lastRadius)
                 {
                     _mapper.Build(config, localRect, settings.BorderInset, settings.SampleRadius);
+                    ConfigureBands(settings, localRect);
                     lastInset = settings.BorderInset;
                     lastRadius = settings.SampleRadius;
                 }
@@ -329,14 +354,30 @@ public sealed class StreamEngine : IDisposable
 
                 if (now >= nextCaptureAt)
                 {
-                    if (_capture.TryCapture(_frameBuffer, out _))
+                    // Full-frame readback is only needed to render the on-screen
+                    // preview; while the window is hidden, read back just the
+                    // edge bands the LEDs sample (orders of magnitude less data).
+                    var useFullFrame = !_bandsUsable || (PreviewEnabled && FramePreview != null);
+                    // The full-frame buffer is large (~33 MB at 4K); only
+                    // allocate it once the preview actually needs it.
+                    if (useFullFrame && (_frameBuffer == null || _frameBuffer.Length != frameBytes))
+                        _frameBuffer = new byte[frameBytes];
+                    var captureResult = useFullFrame
+                        ? _capture.TryCapture(_frameBuffer, out _)
+                        : _capture.TryCaptureBands(_bands);
+
+                    if (captureResult == CaptureResult.FrameCaptured)
                     {
-                        ColorSampler.SampleFrame(
-                            _frameBuffer,
-                            _capture.Width,
-                            _capture.Height,
-                            _mapper.StripRegions,
-                            _stripRgbBuffer);
+                        if (useFullFrame)
+                            ColorSampler.SampleFrame(
+                                _frameBuffer,
+                                _capture.Width,
+                                _capture.Height,
+                                _mapper.StripRegions,
+                                _stripRgbBuffer);
+                        else
+                            ColorSampler.SampleBands(_bands, _mapper.StripRegions, _stripRgbBuffer);
+                        _lastFrameWasFull = useFullFrame;
 
                         if (interpolate)
                         {
@@ -377,6 +418,7 @@ public sealed class StreamEngine : IDisposable
                         if (await _ws.SendBinaryAsync(_packetBuffer, ct))
                         {
                             sendCount++;
+                            Volatile.Write(ref _lastSendOkAt, Environment.TickCount64);
                             EmitPreview(config, captureBackend, settings);
                         }
                         else
@@ -392,6 +434,7 @@ public sealed class StreamEngine : IDisposable
                 if (sw.Elapsed - statsAt >= TimeSpan.FromSeconds(1))
                 {
                     var elapsed = (sw.Elapsed - statsAt).TotalSeconds;
+                    captureBackend = _capture.BackendName;
                     UpdateStatus(s => s with
                     {
                         CaptureFps = captureCount / elapsed,
@@ -429,19 +472,41 @@ public sealed class StreamEngine : IDisposable
         return a < b ? a : b;
     }
 
+    private void ConfigureBands(AppSettings settings, Rectangle localRect)
+    {
+        var depth = LedLayoutMapper.SampleDepth(localRect, settings.BorderInset, settings.SampleRadius);
+        var thickness = settings.BorderInset + depth;
+        // Bands must fully contain every sample region; if the inset pushes
+        // regions deeper than the capture rect allows, stay on the full-frame
+        // path so colors remain correct.
+        _bandsUsable = thickness <= Math.Min(localRect.Width, localRect.Height);
+        if (_bandsUsable)
+            _bands.Configure(localRect.Width, localRect.Height, thickness);
+    }
+
     private void EmitPreview(DeviceConfig config, string captureBackend, AppSettings settings)
     {
+        if (!PreviewEnabled || !_lastFrameWasFull) return;
         if (FramePreview == null || _outputRgbBuffer == null || _frameBuffer == null) return;
 
         var now = Environment.TickCount64;
         if (now - _lastPreviewTicks < 66) return;
         _lastPreviewTicks = now;
 
+        // Alternate between two reusable buffers so the UI thread can still be
+        // reading the previous preview while the next one is written.
+        _previewBufferIndex ^= 1;
         var (pixels, previewW, previewH) = DownscaleBgra(
             _frameBuffer,
             _capture.Width,
             _capture.Height,
-            480);
+            480,
+            ref _previewPixelBuffers[_previewBufferIndex]);
+
+        var strip = _previewStripBuffers[_previewBufferIndex];
+        if (strip == null || strip.Length != _outputRgbBuffer.Length)
+            _previewStripBuffers[_previewBufferIndex] = strip = new byte[_outputRgbBuffer.Length];
+        _outputRgbBuffer.AsSpan().CopyTo(strip);
 
         FramePreview.Invoke(PreviewStateBuilder.Build(
             settings,
@@ -449,24 +514,43 @@ public sealed class StreamEngine : IDisposable
             pixels,
             previewW,
             previewH,
-            (byte[])_outputRgbBuffer.Clone(),
+            strip,
             captureBackend,
-            isLive: true));
+            isLive: true,
+            precomputedRegions: _mapper.StripRegions,
+            sourceSize: new Size(_capture.Width, _capture.Height)));
     }
 
     private static (byte[] pixels, int width, int height) DownscaleBgra(
         byte[] src,
         int srcW,
         int srcH,
-        int maxWidth)
+        int maxWidth,
+        ref byte[]? buffer)
     {
+        int dstW, dstH;
         if (srcW <= maxWidth)
-            return ((byte[])src.Clone(), srcW, srcH);
+        {
+            dstW = srcW;
+            dstH = srcH;
+        }
+        else
+        {
+            dstW = maxWidth;
+            dstH = Math.Max(1, (int)Math.Round(srcH * (maxWidth / (double)srcW)));
+        }
 
-        var dstW = maxWidth;
-        var dstH = Math.Max(1, (int)Math.Round(srcH * (maxWidth / (double)srcW)));
-        var dst = new byte[dstW * dstH * 4];
+        var needed = dstW * dstH * 4;
+        if (buffer == null || buffer.Length != needed)
+            buffer = new byte[needed];
 
+        if (srcW <= maxWidth)
+        {
+            src.AsSpan(0, needed).CopyTo(buffer);
+            return (buffer, dstW, dstH);
+        }
+
+        var dst = buffer;
         for (var y = 0; y < dstH; y++)
         {
             var srcY = y * srcH / dstH;
